@@ -1,0 +1,146 @@
+#version 330 core
+
+out vec4 fragment_color;
+
+uniform sampler2D shadowMapSampler;
+uniform sampler2DArray textureArraySampler;
+uniform int renderLight;
+
+in vec3 local_position;
+in vec3 interpolated_tex_coords;
+in float interpolated_shading_value;
+in vec3 vertex_position_worldspace;
+in vec3 vertex_position_cameraspace;
+in vec3 vertex_normal_cameraspace;
+in vec4 vertex_position_lightspace; // shading
+
+struct Light {
+    vec4 La;
+    vec4 Ld;
+    vec4 Ls;
+    vec3 lightPosition_worldspace;
+    float power;
+};
+uniform Light light;
+
+vec4 phong(float visibility, Light light, float value);
+float ShadowCalculation(vec4 fragPositionLightspace, sampler2D sampler);
+
+void main() {
+    float shadow  = ShadowCalculation(vertex_position_lightspace, shadowMapSampler);
+	float visibility = 1.0f - shadow;
+    vec4 texture_color = texture(textureArraySampler, interpolated_tex_coords);
+
+    if (renderLight == 1) {
+        vec4 firstColor = phong(visibility, light, 1.0f);
+        fragment_color = firstColor;
+    }
+	    
+    else {
+        vec4 firstColor = phong(visibility, light, interpolated_shading_value);
+        fragment_color =  firstColor;
+    }
+        
+
+	if (texture_color.a == 0.0f) {
+		discard;
+	}
+
+}
+
+float ShadowCalculation(vec4 vertexPositionLightspace, sampler2D sampler){
+    // Given the position of a fragment in lightspace coordinates
+    // We sample the depth buffer to see whether or not the fragment is shadowed
+    
+    float shadow;
+
+    // Task 4.3
+    //*/
+    // Perspective devide to bring coordinates in range[-1, 1]
+    vec3 projCoords = vertexPositionLightspace.xyz / vertexPositionLightspace.w;
+
+    // Since the depth map values are in range[0, 1]
+    projCoords = projCoords * 0.5 + 0.5;
+
+    // Sampling the closest point in this position from the depth map
+    // REMINDER: Since we are in lightspace coordinates,
+    //           the z parameter is the depth from the camera
+    float closestDepth = texture(sampler, projCoords.xy).r;
+
+    // Then we get the depth of the current vertex
+    float currentDepth = projCoords.z;
+
+    // If the currentDepth is larger than the closestDepth, the fragment is shadowed
+    shadow = currentDepth > closestDepth ? 1.0 : 0.0;
+    //*/
+
+    // Task 4.4
+    // Correcting the quantization problem
+    float bias = 0.005;
+    shadow = currentDepth - bias > closestDepth ? 1.0 : 0.0;
+        
+
+    // Task 4.7 Make the shadow edges more realistic
+    /*/
+    shadow = 0.0;
+    vec2 depthMap_dimensions = textureSize(shadowMapSampler, 0);
+    vec2 texelSize = 1.0 / depthMap_dimensions;
+    for(int x = -1; x <= 1; x++ ){
+        for(int y = -1; y <= 1; y++ ){
+            float pcfDepth = texture(shadowMapSampler, projCoords.xy + vec2(x, y) * texelSize).r;
+            shadow += currentDepth - bias > pcfDepth ? 1.0 : 0.0; 
+        }
+    }
+    shadow /= 9.0;
+    //*/
+
+
+    // Task 4.5
+    //*/
+    if(projCoords.z > 1.0)
+        shadow = 0.0;
+    //*/
+
+
+    return shadow;
+
+}
+
+
+vec4 phong(float visibility, Light light, float value) {
+    vec4 _Ka = vec4(value, value, value, 1.0);
+    vec4 _Kd = vec4(value, value, value, 1.0);
+    vec4 _Ks = vec4(value, value, value, 1.0);
+    float _Ns = 12.8f;
+
+    if (renderLight != 1) {
+        _Kd = vec4(texture(textureArraySampler, interpolated_tex_coords).rgb, 1.0);
+        _Ka = _Kd * 0.5;
+    }
+    
+    // model ambient intensity (Ia)
+    vec4 Ia = light.La * _Ka;
+
+    // model diffuse intensity (Id)
+    vec3 N = normalize(vertex_normal_cameraspace); 
+    vec3 L = normalize((vec4(light.lightPosition_worldspace, 1)).xyz - vertex_position_worldspace);
+    float cosTheta = clamp(dot(L, N), 0, 1);
+    vec4 Id = light.Ld * _Kd * cosTheta; 
+
+    // model specular intensity (Is)
+    vec3 R = reflect(-L, N);
+    vec3 E = normalize(- vertex_position_worldspace);
+    float cosAlpha = clamp(dot(E, R), 0, 1);
+    float specular_factor = pow(cosAlpha, _Ns);
+    vec4 Is = light.Ls * _Ks * specular_factor;
+
+    //model the light distance effect
+    float distance = length(light.lightPosition_worldspace - vertex_position_worldspace);
+    float distance_sq = distance * distance;
+
+    // final fragment color
+    return vec4(
+        Ia + 
+        visibility * Id * light.power / distance_sq +   // Task 4.3 Use visibility
+        visibility * Is * light.power / distance_sq);
+}
